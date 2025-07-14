@@ -2,76 +2,69 @@
 require('dotenv').config();
 const Discord = require('discord.js');
 const axios = require('axios');
-const client = new Discord.Client();
+const fs = require('fs');
+const path = require('path');
 
-// Liste des utilisateurs à tracker (Discord ID : Riot ID)
-const trackedPlayers = {
-    'DISCORD_USER_ID_1': { 
-        summonerName: 'NomInvocateur1', 
-        region: 'euw1' 
-    },
-    'DISCORD_USER_ID_2': { 
-        summonerName: 'NomInvocateur2', 
-        region: 'na1' 
-    }
+const client = new Discord.Client({ intents: [Discord.Intents.FLAGS.GUILDS, Discord.Intents.FLAGS.GUILD_MESSAGES] });
+client.commands = new Discord.Collection();
+
+// Chargement des commandes
+const commandsPath = path.join(__dirname, 'commands');
+const commandFiles = fs.readdirSync(commandsPath).filter(file => file.endsWith('.js'));
+
+for (const file of commandFiles) {
+    const filePath = path.join(commandsPath, file);
+    const command = require(filePath);
+    client.commands.set(command.data.name, command);
+}
+
+// Configuration
+const config = {
+    trackedPlayers: require('./trackedPlayers.json'),
+    notificationChannel: null,
+    lastKnownMatches: {}
 };
 
-// Dictionnaire pour stocker le dernier match connu
-let lastKnownMatches = {};
+// Vérification des matchs
+async function checkMatches() {
+    const embed = new Discord.MessageEmbed()
+        .setTitle(`Résultat de partie - ${participant.championId}`)
+        .setDescription(`${win ? 'Victoire 🏆' : 'Défaite 💀'}`)
+        .addField('KDA', `${participant.stats.kills}/${participant.stats.deaths}/${participant.stats.assists}`)
+        .addField('Farm', participant.stats.totalMinionsKilled)
+        .setColor(win ? '#00ff00' : '#ff0000')
+        .setTimestamp();
+
+    config.notificationChannel.send({ 
+        content: `🎮 <@${discordId}> a ${win ? 'gagné' : 'perdu'} sa partie`,
+        embeds: [embed] 
+    });
+
+    // A garder ? 
+    /* if (!config.notificationChannel) return;
+
+    for (const [discordId, playerInfo] of Object.entries(config.trackedPlayers)) {
+    } */
+}
 
 client.on('ready', () => {
     console.log(`Connecté en tant que ${client.user.tag}!`);
-    
     // Vérifier les parties toutes les minutes
     setInterval(checkMatches, 60000);
 });
 
-async function checkMatches() {
-    for (const [discordId, playerInfo] of Object.entries(trackedPlayers)) {
-        try {
-            // Récupérer l'ID du summoner
-            const summonerResponse = await axios.get(
-                `https://${playerInfo.region}.api.riotgames.com/lol/summoner/v4/summoners/by-name/${encodeURIComponent(playerInfo.summonerName)}`,
-                { headers: { 'X-Riot-Token': process.env.RIOT_API_KEY } }
-            );
-            
-            const summonerId = summonerResponse.data.id;
-            
-            // Récupérer les matchs récents
-            const matchesResponse = await axios.get(
-                `https://${playerInfo.region}.api.riotgames.com/lol/match/v4/matchlists/by-account/${summonerResponse.data.accountId}`,
-                { headers: { 'X-Riot-Token': process.env.RIOT_API_KEY } }
-            );
-            
-            const latestMatchId = matchesResponse.data.matches[0].gameId;
-            
-            // Si c'est un nouveau match
-            if (!lastKnownMatches[discordId] || lastKnownMatches[discordId] !== latestMatchId) {
-                lastKnownMatches[discordId] = latestMatchId;
-                
-                // Récupérer les détails du match
-                const matchDetails = await axios.get(
-                    `https://${playerInfo.region}.api.riotgames.com/lol/match/v4/matches/${latestMatchId}`,
-                    { headers: { 'X-Riot-Token': process.env.RIOT_API_KEY } }
-                );
-                
-                // Trouver le joueur dans la liste des participants
-                const participant = matchDetails.data.participants.find(
-                    p => p.summonerName === playerInfo.summonerName
-                );
-                
-                if (participant) {
-                    const win = participant.stats.win;
-                    const user = await client.users.fetch(discordId);
-                    const channel = user.dmChannel || await user.createDM();
-                    
-                    channel.send(`🎮 Résultat de ta dernière partie de LoL: ${win ? 'Victoire 🏆' : 'Défaite 💀'}`);
-                }
-            }
-        } catch (error) {
-            console.error(`Erreur lors du tracking pour ${playerInfo.summonerName}:`, error.message);
-        }
+client.on('interactionCreate', async interaction => {
+    if (!interaction.isCommand()) return;
+
+    const command = client.commands.get(interaction.commandName);
+    if (!command) return;
+
+    try {
+        await command.execute(interaction, config);
+    } catch (error) {
+        console.error(error);
+        await interaction.reply({ content: 'Erreur lors de l\'exécution de cette commande', ephemeral: true });
     }
-}
+});
 
 client.login(process.env.DISCORD_TOKEN);
